@@ -113,11 +113,6 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 	// variable for now.
 	_ = jit
 
-	// Validate template availability before creating container
-	if err := a.validateTemplate(ctx); err != nil {
-		return "", err
-	}
-
 	// Allocate next ID
 	nextID, err := a.proxmoxClient.GetNextID(ctx, nil)
 	if err != nil {
