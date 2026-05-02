@@ -138,6 +138,10 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 		params["ostemplate"] = a.proxmoxOSTmpl
 	}
 
+	for key, value := range params {
+		a.logger.Debug("LXC create param", slog.String("key", key), slog.Any("value", value))
+	}
+
 	if _, err := a.proxmoxClient.CreateLxcContainer(ctx, a.proxmoxNode, params); err != nil {
 		return "", fmt.Errorf("failed to create lxc container: %w", err)
 	}
