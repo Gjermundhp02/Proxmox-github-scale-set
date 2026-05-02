@@ -57,7 +57,7 @@ type ProxmoxToken struct {
 	Name      string               `yaml:"name"`
 	Realm     string               `yaml:"realm"`
 	Secret    string               `yaml:"secret"`
-	TokenName proxmox.ApiTokenName `yaml:"name"`
+	TokenName proxmox.ApiTokenName `yaml:"tokenName"`
 }
 
 func (pt *ProxmoxToken) toAPIToken() proxmox.ApiTokenID {
