@@ -264,6 +264,9 @@ func (c *Config) LoadFromFile(path string) error {
 	if c.ProxmoxURL == "" {
 		c.ProxmoxURL = fileCfg.ProxmoxURL
 	}
+	if c.ProxmoxTokenID == "" {
+		c.ProxmoxTokenID = fileCfg.ProxmoxTokenID
+	}
 	if c.ProxmoxTokenSecret == "" {
 		c.ProxmoxTokenSecret = fileCfg.ProxmoxTokenSecret
 	}
