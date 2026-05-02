@@ -1,12 +1,11 @@
 name: Sleep Pipeline
 
 on:
-  push:
   workflow_dispatch:
 
 jobs:
   sleep:
-    runs-on: ubuntu-latest
+    runs-on: my-docker-scale-set
     strategy:
       matrix:
         value: [one, two, three]
