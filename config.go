@@ -29,7 +29,7 @@ type Config struct {
 
 	// Proxmox connection settings
 	ProxmoxURL         string                 `yaml:"proxmoxUrl"`
-	ProxmoxTokenID     ProxmoxToken           `yaml:"proxmoxTokenId"`
+	ProxmoxTokenID     string                 `yaml:"proxmoxTokenId"`
 	ProxmoxTokenSecret proxmox.ApiTokenSecret `yaml:"proxmoxTokenSecret"`
 	ProxmoxInsecure    bool                   `yaml:"proxmoxInsecure"`
 	ProxmoxNode        string                 `yaml:"proxmoxNode"`
@@ -50,23 +50,6 @@ func (g GitHubAppYAML) toScalesetAuth() scaleset.GitHubAppAuth {
 		ClientID:       g.ClientID,
 		InstallationID: g.InstallationID,
 		PrivateKey:     g.PrivateKey,
-	}
-}
-
-type ProxmoxToken struct {
-	Name      string               `yaml:"name"`
-	Realm     string               `yaml:"realm"`
-	Secret    string               `yaml:"secret"`
-	TokenName proxmox.ApiTokenName `yaml:"tokenName"`
-}
-
-func (pt *ProxmoxToken) toAPIToken() proxmox.ApiTokenID {
-	return proxmox.ApiTokenID{
-		User: proxmox.UserID{
-			Name:  pt.Name,
-			Realm: pt.Realm,
-		},
-		TokenName: pt.TokenName,
 	}
 }
 
@@ -142,8 +125,9 @@ func (c *Config) ProxmoxClient() (*proxmox.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create proxmox client: %w", err)
 	}
-
-	client.SetAPIToken(c.ProxmoxTokenID.toAPIToken(), c.ProxmoxTokenSecret)
+	var apiTokenID proxmox.ApiTokenID
+	apiTokenID.Parse(c.ProxmoxTokenID)
+	client.SetAPIToken(apiTokenID, c.ProxmoxTokenSecret)
 	return client, nil
 }
 
@@ -279,10 +263,6 @@ func (c *Config) LoadFromFile(path string) error {
 	// Proxmox fields: merge values from file when not set on receiver
 	if c.ProxmoxURL == "" {
 		c.ProxmoxURL = fileCfg.ProxmoxURL
-	}
-	// Token ID: prefer existing valid token id, otherwise take from file
-	if c.ProxmoxTokenID.Name == "" && fileCfg.ProxmoxTokenID.Name != "" {
-		c.ProxmoxTokenID = fileCfg.ProxmoxTokenID
 	}
 	if c.ProxmoxTokenSecret == "" {
 		c.ProxmoxTokenSecret = fileCfg.ProxmoxTokenSecret
