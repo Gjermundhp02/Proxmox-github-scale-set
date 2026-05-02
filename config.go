@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
@@ -29,14 +28,13 @@ type Config struct {
 	LogFormat       string        `yaml:"logFormat"`
 
 	// Proxmox connection settings
-	ProxmoxURL        string `yaml:"proxmoxUrl"`
-	ProxmoxUser       string `yaml:"proxmoxUser"`
-	ProxmoxPassword   string `yaml:"proxmoxPassword"`
-	ProxmoxOTP        string `yaml:"proxmoxOtp"`
-	ProxmoxInsecure   bool   `yaml:"proxmoxInsecure"`
-	ProxmoxNode       string `yaml:"proxmoxNode"`
-	ProxmoxStorage    string `yaml:"proxmoxStorage"`
-	ProxmoxOSTemplate string `yaml:"proxmoxOsTemplate"`
+	ProxmoxURL         string                 `yaml:"proxmoxUrl"`
+	ProxmoxTokenID     ProxmoxToken           `yaml:"proxmoxTokenId"`
+	ProxmoxTokenSecret proxmox.ApiTokenSecret `yaml:"proxmoxTokenSecret"`
+	ProxmoxInsecure    bool                   `yaml:"proxmoxInsecure"`
+	ProxmoxNode        string                 `yaml:"proxmoxNode"`
+	ProxmoxStorage     string                 `yaml:"proxmoxStorage"`
+	ProxmoxOSTemplate  string                 `yaml:"proxmoxOsTemplate"`
 }
 
 // GitHubAppYAML mirrors the fields needed for GitHub App auth and includes
@@ -52,6 +50,23 @@ func (g GitHubAppYAML) toScalesetAuth() scaleset.GitHubAppAuth {
 		ClientID:       g.ClientID,
 		InstallationID: g.InstallationID,
 		PrivateKey:     g.PrivateKey,
+	}
+}
+
+type ProxmoxToken struct {
+	Name      string               `yaml:"name"`
+	Realm     string               `yaml:"realm"`
+	Secret    string               `yaml:"secret"`
+	TokenName proxmox.ApiTokenName `yaml:"name"`
+}
+
+func (pt *ProxmoxToken) toAPIToken() proxmox.ApiTokenID {
+	return proxmox.ApiTokenID{
+		User: proxmox.UserID{
+			Name:  pt.Name,
+			Realm: pt.Realm,
+		},
+		TokenName: pt.TokenName,
 	}
 }
 
@@ -99,11 +114,8 @@ func (c *Config) Validate() error {
 	if c.ProxmoxURL == "" {
 		return fmt.Errorf("proxmox URL is required (proxmoxUrl)")
 	}
-	if c.ProxmoxUser == "" {
-		return fmt.Errorf("proxmox user is required (proxmoxUser)")
-	}
-	if c.ProxmoxPassword == "" {
-		return fmt.Errorf("proxmox password is required (proxmoxPassword)")
+	if c.ProxmoxTokenSecret == "" {
+		return fmt.Errorf("proxmox token secret is required (proxmoxTokenSecret)")
 	}
 	if c.ProxmoxNode == "" {
 		return fmt.Errorf("proxmox node is required (proxmoxNode)")
@@ -131,9 +143,7 @@ func (c *Config) ProxmoxClient() (*proxmox.Client, error) {
 		return nil, fmt.Errorf("failed to create proxmox client: %w", err)
 	}
 
-	if err := client.Login(context.Background(), c.ProxmoxUser, c.ProxmoxPassword, c.ProxmoxOTP); err != nil {
-		return nil, fmt.Errorf("proxmox login failed: %w", err)
-	}
+	client.SetAPIToken(c.ProxmoxTokenID.toAPIToken(), c.ProxmoxTokenSecret)
 	return client, nil
 }
 
