@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/Telmate/proxmox-api-go/proxmox"
@@ -112,6 +113,11 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 	// variable for now.
 	_ = jit
 
+	// Validate template availability before creating container
+	if err := a.validateTemplate(ctx); err != nil {
+		return "", err
+	}
+
 	// Allocate next ID
 	nextID, err := a.proxmoxClient.GetNextID(ctx, nil)
 	if err != nil {
@@ -164,6 +170,63 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 
 	a.runners.addIdle(name, strconv.Itoa(vmid))
 	return name, nil
+}
+
+// validateTemplate checks if the configured template (name or full path)
+// exists in the configured storage on the node. Returns a helpful error
+// when not found or when the storage listing cannot be retrieved.
+func (a *Scaler) validateTemplate(ctx context.Context) error {
+	// Prefer explicit template name lookup (safer for non-root tokens)
+	name := a.proxmoxOSTmplName
+	full := a.proxmoxOSTmpl
+	if name == "" && full == "" {
+		return fmt.Errorf("no proxmox template configured")
+	}
+
+	// List storage content on the node
+	data, err := a.proxmoxClient.GetStorageContent(ctx, a.proxmoxStorage, proxmox.NodeName(a.proxmoxNode))
+	if err != nil {
+		return fmt.Errorf("failed to list storage content for storage %s on node %s: %w", a.proxmoxStorage, a.proxmoxNode, err)
+	}
+
+	rawList, ok := data["data"].([]interface{})
+	if !ok {
+		return fmt.Errorf("unexpected storage content format for storage %s on node %s", a.proxmoxStorage, a.proxmoxNode)
+	}
+
+	for _, item := range rawList {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// try common fields that contain the stored identifier
+		if volid, ok := m["volid"].(string); ok {
+			if name != "" && strings.Contains(volid, name) {
+				return nil
+			}
+			if full != "" && strings.Contains(volid, full) {
+				return nil
+			}
+		}
+		if path, ok := m["path"].(string); ok {
+			if name != "" && strings.Contains(path, name) {
+				return nil
+			}
+			if full != "" && strings.Contains(path, full) {
+				return nil
+			}
+		}
+		if nameField, ok := m["name"].(string); ok {
+			if name != "" && strings.Contains(nameField, name) {
+				return nil
+			}
+		}
+	}
+
+	if name != "" {
+		return fmt.Errorf("template '%s' not found in storage '%s' on node '%s'", name, a.proxmoxStorage, a.proxmoxNode)
+	}
+	return fmt.Errorf("template '%s' not found in storage '%s' on node '%s'", full, a.proxmoxStorage, a.proxmoxNode)
 }
 
 func (a *Scaler) shutdown(ctx context.Context) {
