@@ -276,6 +276,31 @@ func (c *Config) LoadFromFile(path string) error {
 		c.LogFormat = fileCfg.LogFormat
 	}
 
+	// Proxmox fields: merge values from file when not set on receiver
+	if c.ProxmoxURL == "" {
+		c.ProxmoxURL = fileCfg.ProxmoxURL
+	}
+	// Token ID: prefer existing valid token id, otherwise take from file
+	if c.ProxmoxTokenID.Name == "" && fileCfg.ProxmoxTokenID.Name != "" {
+		c.ProxmoxTokenID = fileCfg.ProxmoxTokenID
+	}
+	if c.ProxmoxTokenSecret == "" {
+		c.ProxmoxTokenSecret = fileCfg.ProxmoxTokenSecret
+	}
+	// Insecure: if not set true, inherit from file
+	if !c.ProxmoxInsecure && fileCfg.ProxmoxInsecure {
+		c.ProxmoxInsecure = true
+	}
+	if c.ProxmoxNode == "" {
+		c.ProxmoxNode = fileCfg.ProxmoxNode
+	}
+	if c.ProxmoxStorage == "" {
+		c.ProxmoxStorage = fileCfg.ProxmoxStorage
+	}
+	if c.ProxmoxOSTemplate == "" {
+		c.ProxmoxOSTemplate = fileCfg.ProxmoxOSTemplate
+	}
+
 	c.defaults()
 	return nil
 }
