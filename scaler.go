@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 
+	"github.com/Telmate/proxmox-api-go/proxmox"
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
-	"github.com/docker/docker/api/types/container"
-	dockerclient "github.com/docker/docker/client"
 	"github.com/google/uuid"
 )
 
@@ -17,7 +17,10 @@ type Scaler struct {
 	runners        runnerState
 	runnerImage    string
 	scaleSetID     int
-	dockerClient   *dockerclient.Client
+	proxmoxClient  *proxmox.Client
+	proxmoxNode    string
+	proxmoxStorage string
+	proxmoxOSTmpl  string
 	scalesetClient *scaleset.Client
 	minRunners     int
 	maxRunners     int
@@ -72,9 +75,18 @@ func (a *Scaler) HandleJobStarted(ctx context.Context, jobInfo *scaleset.JobStar
 func (a *Scaler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCompleted) error {
 	a.logger.Info("Job completed", slog.Int64("runnerRequestId", jobInfo.RunnerRequestID), slog.String("jobId", jobInfo.JobID))
 
-	containerID := a.runners.markDone(jobInfo.RunnerName)
-	if err := a.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
-		return fmt.Errorf("failed to remove runner container: %w", err)
+	vmIDStr := a.runners.markDone(jobInfo.RunnerName)
+	vmID, err := strconv.Atoi(vmIDStr)
+	if err != nil {
+		return fmt.Errorf("invalid vm id stored for runner %s: %w", jobInfo.RunnerName, err)
+	}
+
+	vmr, err := a.proxmoxClient.GetVmRefById(ctx, proxmox.GuestID(vmID))
+	if err != nil {
+		return fmt.Errorf("failed to get proxmox vm ref: %w", err)
+	}
+	if _, err := a.proxmoxClient.DeleteVm(ctx, vmr); err != nil {
+		return fmt.Errorf("failed to delete proxmox vm: %w", err)
 	}
 
 	return nil
@@ -93,30 +105,43 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to generate JIT config: %w", err)
 	}
+	// jit is needed by runners; currently we don't have a direct way to inject
+	// the JIT config into the LXC during creation. Keep the value available
+	// for future integration (e.g., cloud-init or guest-agent). Silence unused
+	// variable for now.
+	_ = jit
 
-	c, err := a.dockerClient.ContainerCreate(
-		ctx,
-		&container.Config{
-			Image: a.runnerImage,
-			User:  "runner",
-			Cmd:   []string{"/home/runner/run.sh"},
-			Env: []string{
-				fmt.Sprintf("ACTIONS_RUNNER_INPUT_JITCONFIG=%s", jit.EncodedJITConfig),
-			},
-		},
-		nil,
-		nil, nil,
-		name,
-	)
+	// Allocate next ID
+	nextID, err := a.proxmoxClient.GetNextID(ctx, nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to create runner container: %w", err)
+		return "", fmt.Errorf("failed to get next proxmox id: %w", err)
+	}
+	vmid := int(nextID)
+
+	params := map[string]interface{}{
+		"vmid":       vmid,
+		"hostname":   name,
+		"ostemplate": a.proxmoxOSTmpl,
+		"storage":    a.proxmoxStorage,
+		"memory":     512,
+		"cores":      1,
+		"rootfs":     "1G",
 	}
 
-	if err := a.dockerClient.ContainerStart(ctx, c.ID, container.StartOptions{}); err != nil {
-		return "", fmt.Errorf("failed to start runner container: %w", err)
+	if _, err := a.proxmoxClient.CreateLxcContainer(ctx, a.proxmoxNode, params); err != nil {
+		return "", fmt.Errorf("failed to create lxc container: %w", err)
 	}
 
-	a.runners.addIdle(name, c.ID)
+	// Lookup the created container and start it
+	vmr, err := a.proxmoxClient.GetVmRefByName(ctx, proxmox.GuestName(name))
+	if err != nil {
+		return "", fmt.Errorf("failed to find created lxc container: %w", err)
+	}
+	if _, err := a.proxmoxClient.StartVm(ctx, vmr); err != nil {
+		return "", fmt.Errorf("failed to start created lxc container: %w", err)
+	}
+
+	a.runners.addIdle(name, strconv.Itoa(vmid))
 	return name, nil
 }
 
@@ -126,17 +151,37 @@ func (a *Scaler) shutdown(ctx context.Context) {
 	defer a.runners.mu.Unlock()
 
 	for name, containerID := range a.runners.idle {
-		a.logger.Info("Removing idle runner", slog.String("name", name), slog.String("containerID", containerID))
-		if err := a.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
-			a.logger.Error("Failed to remove idle runner container", slog.String("name", name), slog.String("containerID", containerID), slog.String("error", err.Error()))
+		a.logger.Info("Removing idle runner", slog.String("name", name), slog.String("vmid", containerID))
+		vmid, err := strconv.Atoi(containerID)
+		if err != nil {
+			a.logger.Error("Invalid vm id", slog.String("name", name), slog.String("vmid", containerID), slog.String("error", err.Error()))
+			continue
+		}
+		vmr, err := a.proxmoxClient.GetVmRefById(ctx, proxmox.GuestID(vmid))
+		if err != nil {
+			a.logger.Error("Failed to get vm ref", slog.String("vmid", containerID), slog.String("error", err.Error()))
+			continue
+		}
+		if _, err := a.proxmoxClient.DeleteVm(ctx, vmr); err != nil {
+			a.logger.Error("Failed to delete idle vm", slog.String("name", name), slog.String("vmid", containerID), slog.String("error", err.Error()))
 		}
 	}
 	clear(a.runners.idle)
 
 	for name, containerID := range a.runners.busy {
-		a.logger.Info("Removing busy runner", slog.String("name", name), slog.String("containerID", containerID))
-		if err := a.dockerClient.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
-			a.logger.Error("Failed to remove busy runner container", slog.String("name", name), slog.String("containerID", containerID), slog.String("error", err.Error()))
+		a.logger.Info("Removing busy runner", slog.String("name", name), slog.String("vmid", containerID))
+		vmid, err := strconv.Atoi(containerID)
+		if err != nil {
+			a.logger.Error("Invalid vm id", slog.String("name", name), slog.String("vmid", containerID), slog.String("error", err.Error()))
+			continue
+		}
+		vmr, err := a.proxmoxClient.GetVmRefById(ctx, proxmox.GuestID(vmid))
+		if err != nil {
+			a.logger.Error("Failed to get vm ref", slog.String("vmid", containerID), slog.String("error", err.Error()))
+			continue
+		}
+		if _, err := a.proxmoxClient.DeleteVm(ctx, vmr); err != nil {
+			a.logger.Error("Failed to delete busy vm", slog.String("name", name), slog.String("vmid", containerID), slog.String("error", err.Error()))
 		}
 	}
 	clear(a.runners.busy)

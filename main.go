@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
-	"github.com/docker/docker/api/types/image"
-	dockerclient "github.com/docker/docker/client"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -105,27 +102,10 @@ func run(ctx context.Context, c Config) error {
 		}
 	}()
 
-	dockerClient, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	// Initialize Proxmox client
+	proxmoxClient, err := c.ProxmoxClient()
 	if err != nil {
-		return fmt.Errorf("failed to create docker client: %w", err)
-	}
-
-	logger.Info(
-		"Pulling runner image",
-		slog.String("image", c.RunnerImage),
-	)
-	// Pull the runner image
-	pull, err := dockerClient.ImagePull(ctx, c.RunnerImage, image.PullOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to pull runner image: %w", err)
-	}
-
-	if _, err := io.ReadAll(pull); err != nil {
-		return fmt.Errorf("failed to read image pull response: %w", err)
-	}
-
-	if err := pull.Close(); err != nil {
-		return fmt.Errorf("failed to close image pull: %w", err)
+		return fmt.Errorf("failed to create proxmox client: %w", err)
 	}
 
 	// Get the name of the client which will be used as the owner
@@ -160,7 +140,10 @@ func run(ctx context.Context, c Config) error {
 		runnerImage:    c.RunnerImage,
 		minRunners:     c.MinRunners,
 		maxRunners:     c.MaxRunners,
-		dockerClient:   dockerClient,
+		proxmoxClient:  proxmoxClient,
+		proxmoxNode:    c.ProxmoxNode,
+		proxmoxStorage: c.ProxmoxStorage,
+		proxmoxOSTmpl:  c.ProxmoxOSTemplate,
 		scalesetClient: scalesetClient,
 		scaleSetID:     scaleSet.ID,
 	}

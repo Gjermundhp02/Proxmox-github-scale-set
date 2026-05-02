@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -9,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Telmate/proxmox-api-go/proxmox"
 	"github.com/actions/scaleset"
 )
 
@@ -24,6 +27,16 @@ type Config struct {
 	RunnerImage     string        `yaml:"runnerImage"`
 	LogLevel        string        `yaml:"logLevel"`
 	LogFormat       string        `yaml:"logFormat"`
+
+	// Proxmox connection settings
+	ProxmoxURL        string `yaml:"proxmoxUrl"`
+	ProxmoxUser       string `yaml:"proxmoxUser"`
+	ProxmoxPassword   string `yaml:"proxmoxPassword"`
+	ProxmoxOTP        string `yaml:"proxmoxOtp"`
+	ProxmoxInsecure   bool   `yaml:"proxmoxInsecure"`
+	ProxmoxNode       string `yaml:"proxmoxNode"`
+	ProxmoxStorage    string `yaml:"proxmoxStorage"`
+	ProxmoxOSTemplate string `yaml:"proxmoxOsTemplate"`
 }
 
 // GitHubAppYAML mirrors the fields needed for GitHub App auth and includes
@@ -81,7 +94,47 @@ func (c *Config) Validate() error {
 	if c.RunnerImage == "" {
 		return fmt.Errorf("runner image is required")
 	}
+
+	// Proxmox validation: require basic fields for LXC creation
+	if c.ProxmoxURL == "" {
+		return fmt.Errorf("proxmox URL is required (proxmoxUrl)")
+	}
+	if c.ProxmoxUser == "" {
+		return fmt.Errorf("proxmox user is required (proxmoxUser)")
+	}
+	if c.ProxmoxPassword == "" {
+		return fmt.Errorf("proxmox password is required (proxmoxPassword)")
+	}
+	if c.ProxmoxNode == "" {
+		return fmt.Errorf("proxmox node is required (proxmoxNode)")
+	}
+	if c.ProxmoxStorage == "" {
+		return fmt.Errorf("proxmox storage is required (proxmoxStorage)")
+	}
+	if c.ProxmoxOSTemplate == "" {
+		return fmt.Errorf("proxmox OS template is required (proxmoxOsTemplate)")
+	}
 	return nil
+}
+
+// ProxmoxClient initializes and returns a proxmox client authenticated with the
+// provided credentials. Uses the Telmate proxmox-api-go library.
+func (c *Config) ProxmoxClient() (*proxmox.Client, error) {
+	// build TLS config
+	var tlsCfg *tls.Config
+	if c.ProxmoxInsecure {
+		tlsCfg = &tls.Config{InsecureSkipVerify: true}
+	}
+
+	client, err := proxmox.NewClient(c.ProxmoxURL, nil, "", tlsCfg, "", 300, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create proxmox client: %w", err)
+	}
+
+	if err := client.Login(context.Background(), c.ProxmoxUser, c.ProxmoxPassword, c.ProxmoxOTP); err != nil {
+		return nil, fmt.Errorf("proxmox login failed: %w", err)
+	}
+	return client, nil
 }
 
 // systemInfo serves as a base system info
