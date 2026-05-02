@@ -85,7 +85,7 @@ func (a *Scaler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCo
 	if err != nil {
 		return fmt.Errorf("failed to get proxmox vm ref: %w", err)
 	}
-	if _, err := a.proxmoxClient.DeleteVm(ctx, vmr); err != nil {
+	if err := vmr.Delete(ctx, a.proxmoxClient); err != nil {
 		return fmt.Errorf("failed to delete proxmox vm: %w", err)
 	}
 
@@ -137,8 +137,20 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to find created lxc container: %w", err)
 	}
-	if _, err := a.proxmoxClient.StartVm(ctx, vmr); err != nil {
+	if err := a.proxmoxClient.New().Guest.Start(ctx, *vmr); err != nil {
 		return "", fmt.Errorf("failed to start created lxc container: %w", err)
+	}
+
+	// Best-effort: run setup commands inside the container using the guest-agent.
+	// We export the generated JIT config into the environment so the runner
+	// will be able to register itself.
+	setupCmd := fmt.Sprintf("curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/download/v2.311.0/actions-runner-linux-x64-2.311.0.tar.gz && tar xzf ./actions-runner.tar.gz && export ACTIONS_RUNNER_INPUT_JITCONFIG='%s' && ./run.sh", jit.EncodedJITConfig)
+
+	// Try to execute via guest-agent. If it fails, log and continue — the
+	// container still exists and can be inspected/handled manually.
+	paramsExec := map[string]interface{}{"command": setupCmd}
+	if _, err := a.proxmoxClient.QemuAgentExec(ctx, vmr, paramsExec); err != nil {
+		a.logger.Warn("guest-agent exec failed; setup command was not executed", slog.String("error", err.Error()), slog.String("vm", name))
 	}
 
 	a.runners.addIdle(name, strconv.Itoa(vmid))
@@ -162,7 +174,7 @@ func (a *Scaler) shutdown(ctx context.Context) {
 			a.logger.Error("Failed to get vm ref", slog.String("vmid", containerID), slog.String("error", err.Error()))
 			continue
 		}
-		if _, err := a.proxmoxClient.DeleteVm(ctx, vmr); err != nil {
+		if err := vmr.Delete(ctx, a.proxmoxClient); err != nil {
 			a.logger.Error("Failed to delete idle vm", slog.String("name", name), slog.String("vmid", containerID), slog.String("error", err.Error()))
 		}
 	}
@@ -180,7 +192,7 @@ func (a *Scaler) shutdown(ctx context.Context) {
 			a.logger.Error("Failed to get vm ref", slog.String("vmid", containerID), slog.String("error", err.Error()))
 			continue
 		}
-		if _, err := a.proxmoxClient.DeleteVm(ctx, vmr); err != nil {
+		if err := vmr.Delete(ctx, a.proxmoxClient); err != nil {
 			a.logger.Error("Failed to delete busy vm", slog.String("name", name), slog.String("vmid", containerID), slog.String("error", err.Error()))
 		}
 	}
