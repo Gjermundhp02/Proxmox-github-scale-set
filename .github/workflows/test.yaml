@@ -5,7 +5,7 @@ on:
 
 jobs:
   sleep:
-    runs-on: my-docker-scale-set
+    runs-on: linux
     strategy:
       matrix:
         value: [one, two, three]
