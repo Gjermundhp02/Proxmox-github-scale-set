@@ -28,13 +28,14 @@ type Config struct {
 	LogFormat       string        `yaml:"logFormat"`
 
 	// Proxmox connection settings
-	ProxmoxURL         string                 `yaml:"proxmoxUrl"`
-	ProxmoxTokenID     string                 `yaml:"proxmoxTokenId"`
-	ProxmoxTokenSecret proxmox.ApiTokenSecret `yaml:"proxmoxTokenSecret"`
-	ProxmoxInsecure    bool                   `yaml:"proxmoxInsecure"`
-	ProxmoxNode        string                 `yaml:"proxmoxNode"`
-	ProxmoxStorage     string                 `yaml:"proxmoxStorage"`
-	ProxmoxOSTemplate  string                 `yaml:"proxmoxOsTemplate"`
+	ProxmoxURL            string                 `yaml:"proxmoxUrl"`
+	ProxmoxTokenID        string                 `yaml:"proxmoxTokenId"`
+	ProxmoxTokenSecret    proxmox.ApiTokenSecret `yaml:"proxmoxTokenSecret"`
+	ProxmoxInsecure       bool                   `yaml:"proxmoxInsecure"`
+	ProxmoxNode           string                 `yaml:"proxmoxNode"`
+	ProxmoxStorage        string                 `yaml:"proxmoxStorage"`
+	ProxmoxOSTemplate     string                 `yaml:"proxmoxOsTemplate"`
+	ProxmoxOSTemplateName string                 `yaml:"proxmoxOsTemplateName"`
 }
 
 // GitHubAppYAML mirrors the fields needed for GitHub App auth and includes
@@ -107,7 +108,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("proxmox storage is required (proxmoxStorage)")
 	}
 	if c.ProxmoxOSTemplate == "" {
-		return fmt.Errorf("proxmox OS template is required (proxmoxOsTemplate)")
+		if c.ProxmoxOSTemplateName == "" {
+			return fmt.Errorf("proxmox OS template is required (proxmoxOsTemplate or proxmoxOsTemplateName)")
+		}
 	}
 	return nil
 }
@@ -282,6 +285,9 @@ func (c *Config) LoadFromFile(path string) error {
 	}
 	if c.ProxmoxOSTemplate == "" {
 		c.ProxmoxOSTemplate = fileCfg.ProxmoxOSTemplate
+	}
+	if c.ProxmoxOSTemplateName == "" {
+		c.ProxmoxOSTemplateName = fileCfg.ProxmoxOSTemplateName
 	}
 
 	c.defaults()

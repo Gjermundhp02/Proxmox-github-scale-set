@@ -14,17 +14,18 @@ import (
 )
 
 type Scaler struct {
-	runners        runnerState
-	runnerImage    string
-	scaleSetID     int
-	proxmoxClient  *proxmox.Client
-	proxmoxNode    string
-	proxmoxStorage string
-	proxmoxOSTmpl  string
-	scalesetClient *scaleset.Client
-	minRunners     int
-	maxRunners     int
-	logger         *slog.Logger
+	runners           runnerState
+	runnerImage       string
+	scaleSetID        int
+	proxmoxClient     *proxmox.Client
+	proxmoxNode       string
+	proxmoxStorage    string
+	proxmoxOSTmpl     string
+	proxmoxOSTmplName string
+	scalesetClient    *scaleset.Client
+	minRunners        int
+	maxRunners        int
+	logger            *slog.Logger
 }
 
 func (a *Scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
@@ -119,13 +120,21 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 	vmid := int(nextID)
 
 	params := map[string]interface{}{
-		"vmid":       vmid,
-		"hostname":   name,
-		"ostemplate": a.proxmoxOSTmpl,
-		"storage":    a.proxmoxStorage,
-		"memory":     512,
-		"cores":      1,
-		"rootfs":     "1G",
+		"vmid":     vmid,
+		"hostname": name,
+		"storage":  a.proxmoxStorage,
+		"memory":   512,
+		"cores":    1,
+		"rootfs":   "1G",
+	}
+
+	// Prefer a template name (safer for non-root tokens). If a template name
+	// is provided, pass it (Proxmox will look it up on the provided storage).
+	// Otherwise fall back to the full template path which may require root.
+	if a.proxmoxOSTmplName != "" {
+		params["ostemplate"] = a.proxmoxOSTmplName
+	} else {
+		params["ostemplate"] = a.proxmoxOSTmpl
 	}
 
 	if _, err := a.proxmoxClient.CreateLxcContainer(ctx, a.proxmoxNode, params); err != nil {
