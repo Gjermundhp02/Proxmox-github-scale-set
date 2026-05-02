@@ -121,12 +121,8 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 	vmid := int(nextID)
 
 	params := map[string]interface{}{
-		"vmid":     vmid,
-		"hostname": name,
-		"storage":  a.proxmoxStorage,
-		"memory":   512,
-		"cores":    1,
-		"rootfs":   "1G",
+		"vmid":    vmid,
+		"storage": a.proxmoxStorage,
 	}
 
 	// Prefer a template name (safer for non-root tokens). If a template name
