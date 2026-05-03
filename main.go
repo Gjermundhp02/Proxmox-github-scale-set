@@ -50,6 +50,7 @@ func run(ctx context.Context, c Config) error {
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("configuration validation failed: %w", err)
 	}
+	c.Print()
 
 	logger := c.Logger()
 
@@ -137,16 +138,13 @@ func run(ctx context.Context, c Config) error {
 			idle: make(map[string]string),
 			busy: make(map[string]string),
 		},
-		runnerImage:       c.RunnerImage,
-		minRunners:        c.MinRunners,
-		maxRunners:        c.MaxRunners,
-		proxmoxClient:     proxmoxClient,
-		proxmoxNode:       c.ProxmoxNode,
-		proxmoxStorage:    c.ProxmoxStorage,
-		proxmoxOSTmpl:     c.ProxmoxOSTemplate,
-		proxmoxOSTmplName: c.ProxmoxOSTemplateName,
-		scalesetClient:    scalesetClient,
-		scaleSetID:        scaleSet.ID,
+		runnerImage:    c.RunnerImage,
+		minRunners:     c.MinRunners,
+		maxRunners:     c.MaxRunners,
+		proxmoxClient:  proxmoxClient,
+		proxmoxConfig:  c.Proxmox,
+		scalesetClient: scalesetClient,
+		scaleSetID:     scaleSet.ID,
 	}
 
 	defer scaler.shutdown(context.WithoutCancel(ctx))

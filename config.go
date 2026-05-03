@@ -28,14 +28,24 @@ type Config struct {
 	LogFormat       string        `yaml:"logFormat"`
 
 	// Proxmox connection settings
-	ProxmoxURL            string                 `yaml:"proxmoxUrl"`
-	ProxmoxTokenID        string                 `yaml:"proxmoxTokenId"`
-	ProxmoxTokenSecret    proxmox.ApiTokenSecret `yaml:"proxmoxTokenSecret"`
-	ProxmoxInsecure       bool                   `yaml:"proxmoxInsecure"`
-	ProxmoxNode           string                 `yaml:"proxmoxNode"`
-	ProxmoxStorage        string                 `yaml:"proxmoxStorage"`
-	ProxmoxOSTemplate     string                 `yaml:"proxmoxOsTemplate"`
-	ProxmoxOSTemplateName string                 `yaml:"proxmoxOsTemplateName"`
+	Proxmox ProxmoxConfig `yaml:"proxmox"`
+}
+
+type ProxmoxConfig struct {
+	URL         string                 `yaml:"Url"`
+	TokenID     string                 `yaml:"TokenId"`
+	TokenSecret proxmox.ApiTokenSecret `yaml:"TokenSecret"`
+	Insecure    bool                   `yaml:"Insecure"`
+	Node        string                 `yaml:"Node"`
+	Storage     string                 `yaml:"Storage"`
+	OSTemplate  string                 `yaml:"OsTemplate"`
+	Pool        string                 `yaml:"Pool"`
+	Network     NetworkConfig          `yaml:"Network"`
+}
+
+type NetworkConfig struct {
+	Name   string `yaml:"name"`
+	Bridge string `yaml:"bridge"`
 }
 
 // GitHubAppYAML mirrors the fields needed for GitHub App auth and includes
@@ -65,7 +75,6 @@ func (c *Config) defaults() {
 
 func (c *Config) Validate() error {
 	c.defaults()
-	c.Print()
 	if _, err := url.ParseRequestURI(c.RegistrationURL); err != nil {
 		return fmt.Errorf("invalid registration URL: %w, it should be the full URL of where you want to register your scale set, e.g. 'https://github.com/org/repo'", err)
 	}
@@ -95,22 +104,20 @@ func (c *Config) Validate() error {
 	}
 
 	// Proxmox validation: require basic fields for LXC creation
-	if c.ProxmoxURL == "" {
+	if c.Proxmox.URL == "" {
 		return fmt.Errorf("proxmox URL is required (proxmoxUrl)")
 	}
-	if c.ProxmoxTokenSecret == "" {
+	if c.Proxmox.TokenSecret == "" {
 		return fmt.Errorf("proxmox token secret is required (proxmoxTokenSecret)")
 	}
-	if c.ProxmoxNode == "" {
+	if c.Proxmox.Node == "" {
 		return fmt.Errorf("proxmox node is required (proxmoxNode)")
 	}
-	if c.ProxmoxStorage == "" {
+	if c.Proxmox.Storage == "" {
 		return fmt.Errorf("proxmox storage is required (proxmoxStorage)")
 	}
-	if c.ProxmoxOSTemplate == "" {
-		if c.ProxmoxOSTemplateName == "" {
-			return fmt.Errorf("proxmox OS template is required (proxmoxOsTemplate or proxmoxOsTemplateName)")
-		}
+	if c.Proxmox.OSTemplate == "" {
+		return fmt.Errorf("proxmox OS template is required")
 	}
 	return nil
 }
@@ -120,17 +127,17 @@ func (c *Config) Validate() error {
 func (c *Config) ProxmoxClient() (*proxmox.Client, error) {
 	// build TLS config
 	var tlsCfg *tls.Config
-	if c.ProxmoxInsecure {
+	if c.Proxmox.Insecure {
 		tlsCfg = &tls.Config{InsecureSkipVerify: true}
 	}
 
-	client, err := proxmox.NewClient(c.ProxmoxURL, nil, "", tlsCfg, "", 300, false)
+	client, err := proxmox.NewClient(c.Proxmox.URL, nil, "", tlsCfg, "", 300, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create proxmox client: %w", err)
 	}
 	var apiTokenID proxmox.ApiTokenID
-	apiTokenID.Parse(c.ProxmoxTokenID)
-	client.SetAPIToken(apiTokenID, c.ProxmoxTokenSecret)
+	apiTokenID.Parse(c.Proxmox.TokenID)
+	client.SetAPIToken(apiTokenID, c.Proxmox.TokenSecret)
 	return client, nil
 }
 
@@ -264,32 +271,37 @@ func (c *Config) LoadFromFile(path string) error {
 	}
 
 	// Proxmox fields: merge values from file when not set on receiver
-	if c.ProxmoxURL == "" {
-		c.ProxmoxURL = fileCfg.ProxmoxURL
+	if c.Proxmox.URL == "" {
+		c.Proxmox.URL = fileCfg.Proxmox.URL
 	}
-	if c.ProxmoxTokenID == "" {
-		c.ProxmoxTokenID = fileCfg.ProxmoxTokenID
+	if c.Proxmox.TokenID == "" {
+		c.Proxmox.TokenID = fileCfg.Proxmox.TokenID
 	}
-	if c.ProxmoxTokenSecret == "" {
-		c.ProxmoxTokenSecret = fileCfg.ProxmoxTokenSecret
+	if c.Proxmox.TokenSecret == "" {
+		c.Proxmox.TokenSecret = fileCfg.Proxmox.TokenSecret
 	}
 	// Insecure: if not set true, inherit from file
-	if !c.ProxmoxInsecure && fileCfg.ProxmoxInsecure {
-		c.ProxmoxInsecure = true
+	if !c.Proxmox.Insecure && fileCfg.Proxmox.Insecure {
+		c.Proxmox.Insecure = true
 	}
-	if c.ProxmoxNode == "" {
-		c.ProxmoxNode = fileCfg.ProxmoxNode
+	if c.Proxmox.Node == "" {
+		c.Proxmox.Node = fileCfg.Proxmox.Node
 	}
-	if c.ProxmoxStorage == "" {
-		c.ProxmoxStorage = fileCfg.ProxmoxStorage
+	if c.Proxmox.Storage == "" {
+		c.Proxmox.Storage = fileCfg.Proxmox.Storage
 	}
-	if c.ProxmoxOSTemplate == "" {
-		c.ProxmoxOSTemplate = fileCfg.ProxmoxOSTemplate
+	if c.Proxmox.OSTemplate == "" {
+		c.Proxmox.OSTemplate = fileCfg.Proxmox.OSTemplate
 	}
-	if c.ProxmoxOSTemplateName == "" {
-		c.ProxmoxOSTemplateName = fileCfg.ProxmoxOSTemplateName
+	if c.Proxmox.Pool == "" {
+		c.Proxmox.Pool = fileCfg.Proxmox.Pool
 	}
-
+	if c.Proxmox.Network.Name == "" {
+		c.Proxmox.Network.Name = fileCfg.Proxmox.Network.Name
+	}
+	if c.Proxmox.Network.Bridge == "" {
+		c.Proxmox.Network.Bridge = fileCfg.Proxmox.Network.Bridge
+	}
 	c.defaults()
 	return nil
 }

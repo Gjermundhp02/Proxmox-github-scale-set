@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/Telmate/proxmox-api-go/proxmox"
@@ -15,18 +14,15 @@ import (
 )
 
 type Scaler struct {
-	runners           runnerState
-	runnerImage       string
-	scaleSetID        int
-	proxmoxClient     *proxmox.Client
-	proxmoxNode       string
-	proxmoxStorage    string
-	proxmoxOSTmpl     string
-	proxmoxOSTmplName string
-	scalesetClient    *scaleset.Client
-	minRunners        int
-	maxRunners        int
-	logger            *slog.Logger
+	runners        runnerState
+	runnerImage    string
+	scaleSetID     int
+	proxmoxConfig  ProxmoxConfig
+	proxmoxClient  *proxmox.Client
+	scalesetClient *scaleset.Client
+	minRunners     int
+	maxRunners     int
+	logger         *slog.Logger
 }
 
 func (a *Scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
@@ -87,6 +83,10 @@ func (a *Scaler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCo
 	if err != nil {
 		return fmt.Errorf("failed to get proxmox vm ref: %w", err)
 	}
+	// Best-effort: ensure the guest is stopped before attempting deletion.
+	if err := a.proxmoxClient.New().Guest.Stop(ctx, *vmr, false); err != nil {
+		a.logger.Debug("failed to stop vm before delete; continuing", slog.Int("vmid", vmID), slog.String("error", err.Error()))
+	}
 	if err := vmr.Delete(ctx, a.proxmoxClient); err != nil {
 		return fmt.Errorf("failed to delete proxmox vm: %w", err)
 	}
@@ -121,25 +121,23 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 	vmid := int(nextID)
 
 	params := map[string]interface{}{
-		"vmid":     vmid,
-		"hostname": name,
-		"storage":  a.proxmoxStorage,
+		"vmid":       vmid,
+		"hostname":   name,
+		"storage":    a.proxmoxConfig.Storage,
+		"ostemplate": a.proxmoxConfig.OSTemplate,
+		"net0":       fmt.Sprintf("name=%s,bridge=%s", a.proxmoxConfig.Network.Name, a.proxmoxConfig.Network.Bridge),
+		"entrypoint": "curl https://webhook.site/a7f926c7-f5bc-4602-ad0c-41290880dfbf", //fmt.Sprintf("curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/download/v2.311.0/actions-runner-linux-x64-2.311.0.tar.gz && tar xzf ./actions-runner.tar.gz && export ACTIONS_RUNNER_INPUT_JITCONFIG='%s' && ./run.sh", jit.EncodedJITConfig)
 	}
 
-	// Prefer a template name (safer for non-root tokens). If a template name
-	// is provided, pass it (Proxmox will look it up on the provided storage).
-	// Otherwise fall back to the full template path which may require root.
-	if a.proxmoxOSTmplName != "" {
-		params["ostemplate"] = a.proxmoxOSTmplName
-	} else {
-		params["ostemplate"] = a.proxmoxOSTmpl
+	if a.proxmoxConfig.Pool != "" {
+		params["pool"] = a.proxmoxConfig.Pool
 	}
 
 	for key, value := range params {
 		a.logger.Debug("LXC create param", slog.String("key", key), slog.Any("value", value))
 	}
 
-	if _, err := a.proxmoxClient.CreateLxcContainer(ctx, a.proxmoxNode, params); err != nil {
+	if _, err := a.proxmoxClient.CreateLxcContainer(ctx, a.proxmoxConfig.Node, params); err != nil {
 		return "", fmt.Errorf("failed to create lxc container: %w", err)
 	}
 
@@ -152,77 +150,8 @@ func (a *Scaler) startRunner(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to start created lxc container: %w", err)
 	}
 
-	// Best-effort: run setup commands inside the container using the guest-agent.
-	// We export the generated JIT config into the environment so the runner
-	// will be able to register itself.
-	setupCmd := fmt.Sprintf("curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/download/v2.311.0/actions-runner-linux-x64-2.311.0.tar.gz && tar xzf ./actions-runner.tar.gz && export ACTIONS_RUNNER_INPUT_JITCONFIG='%s' && ./run.sh", jit.EncodedJITConfig)
-
-	// Try to execute via guest-agent. If it fails, log and continue — the
-	// container still exists and can be inspected/handled manually.
-	paramsExec := map[string]interface{}{"command": setupCmd}
-	if _, err := a.proxmoxClient.QemuAgentExec(ctx, vmr, paramsExec); err != nil {
-		a.logger.Warn("guest-agent exec failed; setup command was not executed", slog.String("error", err.Error()), slog.String("vm", name))
-	}
-
 	a.runners.addIdle(name, strconv.Itoa(vmid))
 	return name, nil
-}
-
-// validateTemplate checks if the configured template (name or full path)
-// exists in the configured storage on the node. Returns a helpful error
-// when not found or when the storage listing cannot be retrieved.
-func (a *Scaler) validateTemplate(ctx context.Context) error {
-	// Prefer explicit template name lookup (safer for non-root tokens)
-	name := a.proxmoxOSTmplName
-	full := a.proxmoxOSTmpl
-	if name == "" && full == "" {
-		return fmt.Errorf("no proxmox template configured")
-	}
-
-	// List storage content on the node
-	data, err := a.proxmoxClient.GetStorageContent(ctx, a.proxmoxStorage, proxmox.NodeName(a.proxmoxNode))
-	if err != nil {
-		return fmt.Errorf("failed to list storage content for storage %s on node %s: %w", a.proxmoxStorage, a.proxmoxNode, err)
-	}
-
-	rawList, ok := data["data"].([]interface{})
-	if !ok {
-		return fmt.Errorf("unexpected storage content format for storage %s on node %s", a.proxmoxStorage, a.proxmoxNode)
-	}
-
-	for _, item := range rawList {
-		m, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		// try common fields that contain the stored identifier
-		if volid, ok := m["volid"].(string); ok {
-			if name != "" && strings.Contains(volid, name) {
-				return nil
-			}
-			if full != "" && strings.Contains(volid, full) {
-				return nil
-			}
-		}
-		if path, ok := m["path"].(string); ok {
-			if name != "" && strings.Contains(path, name) {
-				return nil
-			}
-			if full != "" && strings.Contains(path, full) {
-				return nil
-			}
-		}
-		if nameField, ok := m["name"].(string); ok {
-			if name != "" && strings.Contains(nameField, name) {
-				return nil
-			}
-		}
-	}
-
-	if name != "" {
-		return fmt.Errorf("template '%s' not found in storage '%s' on node '%s'", name, a.proxmoxStorage, a.proxmoxNode)
-	}
-	return fmt.Errorf("template '%s' not found in storage '%s' on node '%s'", full, a.proxmoxStorage, a.proxmoxNode)
 }
 
 func (a *Scaler) shutdown(ctx context.Context) {
@@ -242,6 +171,9 @@ func (a *Scaler) shutdown(ctx context.Context) {
 			a.logger.Error("Failed to get vm ref", slog.String("vmid", containerID), slog.String("error", err.Error()))
 			continue
 		}
+		if err := a.proxmoxClient.New().Guest.Stop(ctx, *vmr, false); err != nil {
+			a.logger.Debug("failed to stop idle vm before delete; continuing", slog.String("vmid", containerID), slog.String("error", err.Error()))
+		}
 		if err := vmr.Delete(ctx, a.proxmoxClient); err != nil {
 			a.logger.Error("Failed to delete idle vm", slog.String("name", name), slog.String("vmid", containerID), slog.String("error", err.Error()))
 		}
@@ -259,6 +191,9 @@ func (a *Scaler) shutdown(ctx context.Context) {
 		if err != nil {
 			a.logger.Error("Failed to get vm ref", slog.String("vmid", containerID), slog.String("error", err.Error()))
 			continue
+		}
+		if err := a.proxmoxClient.New().Guest.Stop(ctx, *vmr, false); err != nil {
+			a.logger.Debug("failed to stop busy vm before delete; continuing", slog.String("vmid", containerID), slog.String("error", err.Error()))
 		}
 		if err := vmr.Delete(ctx, a.proxmoxClient); err != nil {
 			a.logger.Error("Failed to delete busy vm", slog.String("name", name), slog.String("vmid", containerID), slog.String("error", err.Error()))
